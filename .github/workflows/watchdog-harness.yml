@@ -28,7 +28,12 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq busybox qemu-user binutils
-          sudo ln -sf "$(command -v qemu-aarch64-static)" /usr/local/bin/qemu-aarch64
+          # qemu-user 已经提供 qemu-aarch64；只有装的是 qemu-user-static 时才需要软链
+          if ! command -v qemu-aarch64 >/dev/null 2>&1; then
+            q=$(command -v qemu-aarch64-static || true)
+            [ -n "$q" ] && sudo ln -sf "$q" /usr/local/bin/qemu-aarch64
+          fi
+          echo ">>> qemu: $(command -v qemu-aarch64)"
           echo ">>> busybox: $(command -v busybox) - $(busybox | head -1)"
           # 与 rd03v2.yml 同一套快检：sh 必须走 PATH
           mkdir -p /tmp/busybox-probe
