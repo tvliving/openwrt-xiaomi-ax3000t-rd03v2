@@ -191,6 +191,20 @@ EOS
 	# (the image's copy is the overlay's, checked above), and the shipped default config
 	chk "watchdog default matches the reviewed overlay" \
 		"$(yes_ cmp "$X/etc/config/rd03v2-watchdog" "$OV/target/linux/qualcommax/ipq50xx/base-files/etc/config/rd03v2-watchdog")" yes
+	# debug: capture the exact environment the harness sees in this job
+	{
+		echo "PATH=$PATH"
+		echo "TMPDIR=$TMPDIR"
+		echo "busybox: $(command -v busybox)"
+		echo "busybox --list | grep -cE '^(dmesg|reboot|rmmod|modprobe|iw|wifi|ubus)$': $(busybox --list 2>/dev/null | grep -cE '^(dmesg|reboot|rmmod|modprobe|iw|wifi|ubus)$')"
+		echo "qemu-aarch64: $(command -v qemu-aarch64)"
+		echo "binfmt: $(grep -qs '^enabled' /proc/sys/fs/binfmt_misc/qemu-aarch64 && echo yes || echo no)"
+		echo "id: $(id -u)/$(id -g)"
+	} > "$TREE/wd-env-dump.txt" 2>&1 || :
+	# debug: rerun three failing scenarios keeping the whole workdir
+	"$V2/tools/test-watchdog.sh" --env host --rootfs "$X" --keep q6_crashed root_crash_running never_registers > "$W/watchdog-keep" 2>&1 || :
+	KD=$(sed -n 's/^kept: //p' "$W/watchdog-keep" | tail -1)
+	[ -n "$KD" ] && tar czf "$TREE/wd-work-dump.tgz" -C "$KD" . 2>/dev/null || :
 	"$V2/tools/test-watchdog.sh" --env host --rootfs "$X" > "$W/watchdog-tests" 2>&1
 	cp "$W/watchdog-tests" "$TREE/watchdog-host-tests.log"
 	chk "watchdog --check scenarios" "$(tail -1 "$W/watchdog-tests" | grep -cE '^ *[0-9]+ passed, 0 failed$')" 1
