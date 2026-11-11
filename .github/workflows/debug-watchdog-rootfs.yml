@@ -25,7 +25,7 @@ jobs:
                    libubus20230605_2023-06-05-f787c97b-1_aarch64_cortex-a53.ipk \
                    libjson-c5_0.16-3_aarch64_cortex-a53.ipk; do
             curl -sSL -O "$B/$p"
-            d=$(mktemp -d); (cd $d && ar x "$OLDPWD/$p" && tar xzf data.tar.gz -C $RFS)
+            d=$(mktemp -d); (cd $d && tar xzf "$OLDPWD/$p" && tar xzf data.tar.gz -C $RFS)
           done
           ls -la $RFS/sbin/uci $RFS/usr/bin/jsonfilter $RFS/lib/ld-musl-aarch64.so.1 $RFS/bin/busybox
           qemu-aarch64 -L $RFS $RFS/sbin/uci -h >/dev/null 2>&1 && echo 'uci runs OK' || echo 'uci FAILED'
