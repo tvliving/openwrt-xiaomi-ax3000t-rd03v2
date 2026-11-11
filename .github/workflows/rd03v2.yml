@@ -1,0 +1,161 @@
+# 小米 AX3000T v2（RD03v2，高通 IPQ5018 + QCN6122）NSS 大分区固件编译
+# 基于 ADCDS/openwrt-xiaomi-ax3000t-rd03v2 的 build.sh 构建体系：
+#   kuncy7/openwrt-nss-edma（锁版本）+ 移植补丁 + NSS 硬件加速，大分区 NAND 常驻安装。
+#
+# 签名说明：build.sh 要求构建签名密钥的公钥与仓库 keys/public-key.pem 一致，
+# 原仓库私钥不公开，因此本 workflow 每次构建生成一次性 EC 密钥对，并同步覆盖
+# keys/public-key.pem；随后把本构建产出的包仓库发布到 gh-pages，镜像内
+# /etc/apk/repositories.d/distfeeds.list 指向自己的包仓库，信任链自洽。
+# 注意：首次成功构建后需在仓库 Settings → Pages 启用 gh-pages 分支（仅一次）。
+name: OpenWrt 小米 AX3000T v2 RD03v2 (NSS) 编译
+
+on:
+  workflow_dispatch:
+    inputs:
+      make_release:
+        description: '编译完成后发布 Release'
+        type: boolean
+        default: true
+  schedule:
+    # UTC 01:00 = 北京时间每周二 09:00
+    - cron: '0 1 * * 2'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+env:
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    name: 🏗️ RD03v2 NSS (IPQ5018)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Checkout 源码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 释放磁盘空间并加大 swap
+        run: |
+          echo "===== 释放前 ====="
+          df -h / | tail -1
+
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache /usr/local/share/boost \
+                      /usr/local/lib/node_modules /usr/lib/jvm \
+                      /usr/share/swift /usr/share/miniconda /usr/share/rust \
+                      /usr/share/kotlinc /usr/share/gradle-* /opt/az \
+                      /opt/microsoft /usr/local/aws-cli /usr/local/.ghcup \
+                      /etc/mysql /etc/php /usr/local/go /opt/pipx 2>/dev/null || true
+
+          sudo systemctl stop docker docker.socket containerd 2>/dev/null || true
+          sudo rm -rf /var/lib/docker /var/lib/containerd 2>/dev/null || true
+          sudo pkill -9 -f dockerd 2>/dev/null || true
+
+          sudo swapoff -a || true
+          sudo rm -f /mnt/swapfile /swapfile
+          sudo fallocate -l 4G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=4096
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+
+          echo "===== 释放后 ====="
+          df -h / | tail -1
+          free -h | head -3
+
+      - name: 安装编译依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang flex bison g++ gawk gcc gettext \
+            git libncurses-dev libpython3-dev libssl-dev rsync unzip zlib1g-dev file wget \
+            curl libelf-dev ecj java-propose-classpath quilt squashfs-tools python3-setuptools
+
+      - name: 生成一次性构建签名密钥
+        run: |
+          WS=$(dirname "$PWD")
+          mkdir -p "$WS/keys/v2"
+          openssl ecparam -name prime256v1 -genkey -noout -out "$WS/keys/v2/private-key.pem"
+          chmod 600 "$WS/keys/v2/private-key.pem"
+          openssl ec -in "$WS/keys/v2/private-key.pem" -pubout -out "$WS/keys/v2/public-key.pem"
+          # build.sh 预检要求：keys/v2 与仓库 keys/public-key.pem 一致
+          cp "$WS/keys/v2/public-key.pem" keys/public-key.pem
+          echo ">>> 已生成一次性签名密钥并同步 keys/public-key.pem"
+
+      - name: 编译（build.sh，含内核/feeds 锁定与自检）
+        run: |
+          set -o pipefail
+          git config user.name "rd03v2-ci"
+          git config user.email "rd03v2-ci@localhost"
+          TAG="ci-$(TZ=Asia/Shanghai date +%Y%m%d)-r${GITHUB_RUN_NUMBER}"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo ">>> TAG=$TAG"
+          JOBS=4 TAG="$TAG" \
+            V2_REPO_URL="https://tvliving.github.io/openwrt-xiaomi-ax3000t-rd03v2/v2/$TAG/packages.adb" \
+            ./build.sh 2>&1 | tee build-run.log
+
+      - name: 上传编译日志（失败时）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: |
+            build-run.log
+            openwrt-v2/build.log
+            openwrt-v2/logs/
+            openwrt-v2/feeds-update.log
+            openwrt-v2/feeds-install.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: 发布包仓库到 gh-pages
+        run: |
+          ./tools/publish-repo.sh "$PWD/openwrt-v2"
+          git -C "$PWD/../pages-worktree" push origin gh-pages
+          echo ">>> 包仓库已发布: https://tvliving.github.io/openwrt-xiaomi-ax3000t-rd03v2/v2/$TAG/packages.adb"
+
+      - name: 收集产物
+        run: |
+          mkdir -p out
+          T="openwrt-v2/bin/targets/qualcommax/ipq50xx"
+          [ -d "$T" ] || { echo "::error::缺少 $T"; exit 1; }
+          find "$T" -maxdepth 1 -type f -exec cp -p {} out/ \;
+          echo "===== 产物 ====="
+          ls -lh out
+          ls out | grep -q 'sysupgrade.bin' \
+            || { echo "::error::没有 sysupgrade 产物"; exit 1; }
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: images-rd03v2
+          path: out/
+          retention-days: 14
+
+      - name: 发布 Release
+        if: ${{ github.event_name == 'schedule' || inputs.make_release != false }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          REL="v2-${TAG}"
+          cat > /tmp/notes.md <<EOF
+          OpenWrt 小米 AX3000T v2（RD03v2，高通 IPQ5018）NSS 大分区固件
+
+          - 基于: ADCDS/openwrt-xiaomi-ax3000t-rd03v2（kuncy7/openwrt-nss-edma 锁版本 + 移植补丁）
+          - 特性: NSS 硬件加速、ath11k 双频、AN8855 交换芯片、大分区 NAND 常驻安装
+          - 构建标签: $TAG
+          - 包仓库: https://tvliving.github.io/openwrt-xiaomi-ax3000t-rd03v2/v2/$TAG/packages.adb
+          - 日志: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          - 默认 IP: 192.168.1.1 / 用户名 root / 无密码（WiFi 默认关闭，首次需配置）
+          EOF
+          ls -lh out/
+          gh release create "$REL" out/* \
+            --title "RD03v2 NSS 固件 ($TAG)" \
+            --notes-file /tmp/notes.md
+          echo ">>> 已发布: $REL"
