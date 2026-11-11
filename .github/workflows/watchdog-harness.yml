@@ -1,0 +1,85 @@
+# tools/test-watchdog.sh 的环境冒烟测试（约 3 分钟）
+#
+# 全量 build.sh 里跑这套场景要等 2 小时编译完，而这套场景对环境很敏感：
+# 它靠 PATH 里的桩模拟 modprobe/rmmod/reboot 等，runner 预装的 busybox-static
+# 编了 FEATURE_SH_STANDALONE，sh 会先跑自带 applet 再看 PATH，桩就全被绕过。
+# 这个 workflow 用「busybox 包 + 一个最小 aarch64 rootfs」把同一套场景跑一遍，
+# 环境问题在这里几分钟就能暴露，不用等整包编译。
+name: watchdog harness smoke test
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'tools/test-watchdog.sh'
+      - '.github/workflows/watchdog-harness.yml'
+
+jobs:
+  harness:
+    name: 🧪 watchdog --check scenarios (host)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 依赖（busybox 包，不是 busybox-static）
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq busybox qemu-user binutils
+          sudo ln -sf "$(command -v qemu-aarch64-static)" /usr/local/bin/qemu-aarch64
+          echo ">>> busybox: $(command -v busybox) - $(busybox | head -1)"
+          # 与 rd03v2.yml 同一套快检：sh 必须走 PATH
+          mkdir -p /tmp/busybox-probe
+          printf '#!/bin/sh\n: > /tmp/busybox-probe/hit\n' > /tmp/busybox-probe/free
+          chmod +x /tmp/busybox-probe/free
+          PATH=/tmp/busybox-probe:$PATH busybox sh -c 'free' >/dev/null 2>&1 || true
+          [ -f /tmp/busybox-probe/hit ] || {
+            echo "::error::busybox 的 sh 优先执行自带 applet（FEATURE_SH_STANDALONE），测试桩会失效"
+            exit 1
+          }
+
+      - name: 组装最小 aarch64 rootfs（uci / jsonfilter / busybox / 镜像里的 functions.sh）
+        run: |
+          set -e
+          RFS=/tmp/rfs; mkdir -p "$RFS"
+          curl -sSL -o /tmp/alpine.tgz \
+            https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/aarch64/alpine-minirootfs-3.20.0-aarch64.tar.gz
+          tar xzf /tmp/alpine.tgz -C "$RFS"
+          B=https://downloads.openwrt.org/releases/23.05.5/packages/aarch64_cortex-a53/base
+          curl -sSL -o /tmp/libgcc.apk \
+            https://dl-cdn.alpinelinux.org/alpine/v3.20/main/aarch64/libgcc-13.2.1_git20240309-r1.apk
+          d0=$(mktemp -d); (cd "$d0" && tar xzf /tmp/libgcc.apk && cp -a lib/* "$RFS/lib/" 2>/dev/null || cp -a usr/lib/* "$RFS/usr/lib/" 2>/dev/null || true)
+          for p in uci_2023-08-10-5781664d-1_aarch64_cortex-a53.ipk \
+                   libuci20130104_2023-08-10-5781664d-1_aarch64_cortex-a53.ipk \
+                   jsonfilter_2025-04-18-8a86fb78-1_aarch64_cortex-a53.ipk \
+                   libubox20230523_2023-05-23-75a3b870-1_aarch64_cortex-a53.ipk \
+                   libblobmsg-json20230523_2023-05-23-75a3b870-1_aarch64_cortex-a53.ipk \
+                   libubus20230605_2023-06-05-f787c97b-1_aarch64_cortex-a53.ipk \
+                   libjson-c5_0.16-3_aarch64_cortex-a53.ipk; do
+            curl -sSL -o "/tmp/$p" "$B/$p"
+            d=$(mktemp -d); (cd "$d" && tar xzf "/tmp/$p" && tar xzf data.tar.gz -C "$RFS")
+          done
+          # nss-tools-dwmac 的 /lib/nss/functions.sh：never_registers_sta_host 这条
+          # 场景要用 nss_dwmac_wifi_offload() 判 offload，缺了它这条测不到 sta 规则
+          mkdir -p "$RFS/lib/nss"
+          curl -sSL -o "$RFS/lib/nss/functions.sh" \
+            https://raw.githubusercontent.com/ADCDS/openwrt/c36db6321c11595dc45a160cdab36b5c2d787744/package/nss/nss-tools/files/functions.sh
+          ls -la "$RFS/sbin/uci" "$RFS/usr/bin/jsonfilter" "$RFS/lib/ld-musl-aarch64.so.1" \
+                 "$RFS/bin/busybox" "$RFS/lib/nss/functions.sh"
+          qemu-aarch64 -L "$RFS" "$RFS/sbin/uci" -h >/dev/null 2>&1 && echo 'uci runs OK' || echo 'uci FAILED'
+
+      - name: 跑 watchdog --check 场景
+        run: |
+          export TMPDIR="$GITHUB_WORKSPACE/v2-tmp"; mkdir -p "$TMPDIR"
+          set -o pipefail
+          bash tools/test-watchdog.sh --env host --rootfs /tmp/rfs 2>&1 | tee /tmp/wd.log
+
+      - name: 上传日志（失败时）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: watchdog-harness-log
+          path: /tmp/wd.log
+          retention-days: 7

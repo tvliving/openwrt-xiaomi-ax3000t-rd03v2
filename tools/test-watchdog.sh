@@ -311,10 +311,11 @@ mk_toolbox() {  # mk_toolbox ENV: sets TB, SHELL_DESC
 	mkdir -p "$TB"
 	case $1 in
 	host)
-		bb=$(command -v busybox) || die "no busybox on this host"
-		for a in $("$bb" --list); do ln -sf "$bb" "$TB/$a"; done
-		SHELL_DESC="host: $("$bb" | head -1)" ;;
+		BB=$(command -v busybox) || die "no busybox on this host"
+		for a in $("$BB" --list); do ln -sf "$BB" "$TB/$a"; done
+		SHELL_DESC="host: $("$BB" | head -1)" ;;
 	target)
+		BB=$RFS/bin/busybox
 		for a in $(find "$RFS" -lname '*busybox' -printf '%f\n' | sort -u); do
 			if [ -z "$RUNT" ]; then
 				ln -sf "$RFS/bin/busybox" "$TB/$a"
@@ -327,6 +328,38 @@ mk_toolbox() {  # mk_toolbox ENV: sets TB, SHELL_DESC
 	esac
 	# Only the watchdog's own commands come from here; the stubs shadow the rest.
 	for s in "$STUBS"/*; do rm -f "$TB/$(basename "$s")"; done
+}
+
+# The stubs are reachable through PATH only, so the shell that runs the watchdog
+# has to resolve commands through PATH. A BusyBox built with
+# FEATURE_SH_STANDALONE runs its own applets first and never looks at PATH:
+# modprobe, rmmod, insmod, reboot, dmesg, sync and logger would then be the
+# host's, and every scenario that breaks something would fail on the stub that
+# never ran (26 of them, with no hint why). Debian/Ubuntu's busybox-static - what
+# GitHub's runners have in PATH - is built that way; their "busybox" package is
+# not. Probe it once, with a stub named after an applet this busybox really has
+# and that is harmless when it does run, and refuse to test rather than report
+# nonsense.
+check_stub_path() {
+	cm=$WORK/stub-path.ok
+	rm -f "$cm"
+	probe=
+	# shellcheck disable=SC2086 # $RUNT is a command with its own options
+	for c in uptime free nproc id; do
+		$RUNT "$BB" --list 2>/dev/null | grep -qx "$c" && { probe=$c; break; }
+	done
+	if [ -z "$probe" ]; then
+		echo "test-watchdog: $SHELL_DESC has no harmless applet to probe the PATH with" >&2
+		return 0
+	fi
+	printf '#!/bin/sh\n: > "%s"\n' "$cm" > "$STUBS/$probe"
+	chmod +x "$STUBS/$probe"
+	env -i PATH="$STUBS:$TB" "$TB/sh" -c "$probe" >/dev/null 2>&1 || :
+	rm -f "$STUBS/$probe"
+	[ -f "$cm" ] || die "$SHELL_DESC runs its own applets before looking at PATH" \
+		"(BusyBox FEATURE_SH_STANDALONE), so the $probe stub was bypassed and every" \
+		"scenario that breaks something would report the host's own tool instead;" \
+		"put a BusyBox without it in PATH (Debian/Ubuntu: the 'busybox' package, not 'busybox-static')"
 }
 
 # --- scenario plumbing ----------------------------------------------------------
@@ -799,6 +832,16 @@ sc_never_registers_sta_host() {  # ath11k never loaded this boot, a station and 
 	w core unloaded; w drv unloaded; w q6 offline; w heal_reload
 	printf "config nss 'general'\n\toption enabled '1'\n\toption wifi_offload '1'\n\toption wifi_offload_sta '0'\n" > "$ROOT/etc/config/nss"
 	printf "\nconfig wifi-iface 'wwan'\n\toption device 'radio1'\n\toption mode 'sta'\n\toption network 'wwan'\n" >> "$ROOT/etc/config/wireless"
+	# This scenario needs the helper nss-dwmac-up decides the boot's offload
+	# with, i.e. nss-tools-dwmac's /lib/nss/functions.sh. Without it the
+	# watchdog is right to fall back to wifi_offload alone, but then the sta
+	# rule below is not what is under test: say so instead of reporting the
+	# mismatch as a bug.
+	if [ ! -f "$RFS/lib/nss/functions.sh" ]; then
+		FAILS="$FAILS
+    $RFS has no /lib/nss/functions.sh (nss-tools-dwmac): pass a full v2 image rootfs"
+		return
+	fi
 	mkdir -p "$ROOT/lib/nss"; cp "$RFS/lib/nss/functions.sh" "$ROOT/lib/nss/"
 	board
 	step
@@ -957,6 +1000,7 @@ disabled_file disabled_uci setup_failed no_wifi never_registers never_registers_
 run_env() {
 	CUR_ENV=$1
 	mk_toolbox "$1"
+	check_stub_path
 	echo "== $SHELL_DESC"
 	pass=0 fail=0
 	for s in $SCENARIOS; do

@@ -75,13 +75,29 @@ jobs:
           sudo apt-get install -y build-essential clang flex bison g++ gawk gcc gettext \
             git libncurses-dev libpython3-dev libssl-dev rsync unzip zlib1g-dev file wget \
             curl libelf-dev ecj java-propose-classpath quilt squashfs-tools python3-setuptools \
-            device-tree-compiler qemu-user-static qemu-user
+            device-tree-compiler qemu-user-static qemu-user busybox
           # device-tree-compiler 提供 fdtget（verify-v2 的 DTB 检查）
           # qemu-user-static 注册 binfmt_misc，但测试脚本要求 PATH 里有 qemu-aarch64 这个名字：
           # Ubuntu 的 qemu-user-static 只装 qemu-aarch64-static，qemu-user 才提供 qemu-aarch64
           # （watchdog --check 场景测试与 v1.x 迁移 target 场景测试依赖；再做个软链兜底）
           command -v qemu-aarch64 >/dev/null 2>&1 || \
             sudo ln -sf "$(command -v qemu-aarch64-static)" /usr/local/bin/qemu-aarch64
+
+          # busybox：watchdog --check 的场景测试靠 PATH 里的桩（stub）模拟 modprobe/
+          # rmmod/reboot 等，而 runner 预装的是 busybox-static——它的 sh 编了
+          # FEATURE_SH_STANDALONE，会先执行自带 applet 再看 PATH，桩全部被绕过，
+          # 26 个场景假失败（reboot 那句 "Operation not permitted" 就是真 reboot 打的）。
+          # Debian/Ubuntu 的 busybox 包没有这个特性，装它会把 busybox-static 换掉。
+          # 装完验一次，免得哪天 runner 变了又变成一堆看不懂的失败。
+          mkdir -p /tmp/busybox-probe
+          printf '#!/bin/sh\n: > /tmp/busybox-probe/hit\n' > /tmp/busybox-probe/free
+          chmod +x /tmp/busybox-probe/free
+          PATH=/tmp/busybox-probe:$PATH busybox sh -c 'free' >/dev/null 2>&1 || true
+          if [ ! -f /tmp/busybox-probe/hit ]; then
+            echo "::error::PATH 里的 busybox 会优先执行自带 applet（FEATURE_SH_STANDALONE），watchdog 测试桩会失效"
+            exit 1
+          fi
+          echo ">>> busybox: $(command -v busybox) - $(busybox | head -1)"
 
       - name: 生成一次性构建签名密钥
         run: |
