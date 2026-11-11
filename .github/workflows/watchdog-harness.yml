@@ -67,10 +67,20 @@ jobs:
             d=$(mktemp -d); (cd "$d" && tar xzf "/tmp/$p" && tar xzf data.tar.gz -C "$RFS")
           done
           # nss-tools-dwmac 的 /lib/nss/functions.sh：never_registers_sta_host 这条
-          # 场景要用 nss_dwmac_wifi_offload() 判 offload，缺了它这条测不到 sta 规则
+          # 场景要用 nss_dwmac_wifi_offload() 判 offload，而这个函数是本仓库
+          # tree-patches/0008 才加进去的，所以按 build.sh 的做法取上游原文件再打补丁，
+          # 不能直接拿上游那份（那份没有这个函数，场景会走 wifi_offload 的 fallback）。
+          . ./upstream.lock
+          T=/tmp/tree; mkdir -p "$T/package/nss/nss-tools/files"
+          curl -sSL -o "$T/package/nss/nss-tools/files/functions.sh" \
+            "https://raw.githubusercontent.com/ADCDS/openwrt/$COMMIT/package/nss/nss-tools/files/functions.sh"
+          ( cd "$T" && for p in "$GITHUB_WORKSPACE"/tree-patches/*.patch; do
+              git apply --include='package/nss/nss-tools/files/functions.sh' "$p" 2>/dev/null || true
+            done )
+          grep -q '^nss_dwmac_wifi_offload()' "$T/package/nss/nss-tools/files/functions.sh" || {
+            echo "::error::打完 tree-patches 后 functions.sh 里仍没有 nss_dwmac_wifi_offload"; exit 1; }
           mkdir -p "$RFS/lib/nss"
-          curl -sSL -o "$RFS/lib/nss/functions.sh" \
-            https://raw.githubusercontent.com/ADCDS/openwrt/c36db6321c11595dc45a160cdab36b5c2d787744/package/nss/nss-tools/files/functions.sh
+          cp "$T/package/nss/nss-tools/files/functions.sh" "$RFS/lib/nss/functions.sh"
           ls -la "$RFS/sbin/uci" "$RFS/usr/bin/jsonfilter" "$RFS/lib/ld-musl-aarch64.so.1" \
                  "$RFS/bin/busybox" "$RFS/lib/nss/functions.sh"
           qemu-aarch64 -L "$RFS" "$RFS/sbin/uci" -h >/dev/null 2>&1 && echo 'uci runs OK' || echo 'uci FAILED'
