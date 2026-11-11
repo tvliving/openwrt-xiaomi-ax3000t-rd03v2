@@ -1,0 +1,33 @@
+name: debug-watchdog-awk
+on: workflow_dispatch
+jobs:
+  awk:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: busybox awk behavior probes
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq busybox qemu-user-static
+          sudo ln -sf "$(command -v qemu-aarch64-static)" /usr/local/bin/qemu-aarch64 || true
+          busybox | head -1
+          echo '--- probe 1: q6_crash_events awk on host busybox ---'
+          printf '[ 701.123456] remoteproc remoteproc0: crash detected in q6wcss: type fatal error\n' > /tmp/dmesg.txt
+          out=$(busybox awk -F'[][]' -v c="30.00" '
+              /crash detected in q6wcss(:|[[:space:]])/ {
+                  if ($2 ~ /^[[:space:]]*[0-9]+[.][0-9]+$/ && $2+0 > c+0) {
+                      if ($2+0 > newest+0) newest=$2
+                  }
+              } END { if (newest != "") { gsub(/^[[:space:]]+/, "", newest); print newest } }' < /tmp/dmesg.txt)
+          echo "awk output: [$out]"
+          echo '--- probe 2: dmesg stub line endings in checkout ---'
+          file tools/test-watchdog.sh overlay/target/linux/qualcommax/ipq50xx/base-files/usr/sbin/rd03v2-watchdog
+          head -3 tools/test-watchdog.sh | cat -A | head -5
+          echo '--- probe 3: stub generation shape (modprobe/rmmod/reboot/dmesg) ---'
+          bash -n tools/test-watchdog.sh && echo 'bash syntax OK'
+          sh -n tools/test-watchdog.sh && echo 'sh syntax OK'
+          echo '--- probe 4: run one scenario harness with a fake rootfs skeleton ---'
+          mkdir -p /tmp/rfs/bin /tmp/rfs/sbin /tmp/rfs/usr/bin /tmp/rfs/lib
+          touch /tmp/rfs/bin/busybox /tmp/rfs/sbin/uci /tmp/rfs/usr/bin/jsonfilter /tmp/rfs/lib/ld-musl-aarch64.so.1
+          cp "$(command -v busybox)" /tmp/rfs/bin/busybox 2>/dev/null || true
+          bash tools/test-watchdog.sh --env host --rootfs /tmp/rfs healthy 2>&1 | head -30
