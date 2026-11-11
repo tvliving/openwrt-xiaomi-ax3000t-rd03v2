@@ -8,8 +8,9 @@ jobs:
       - name: deps
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq busybox qemu-user-static binutils
-          sudo ln -sf "$(command -v qemu-aarch64-static)" /usr/local/bin/qemu-aarch64
+          sudo apt-get install -y -qq busybox qemu-user binutils
+          sudo ln -sf "$(command -v qemu-aarch64)" /usr/local/bin/qemu-aarch64
+          echo "binfmt qemu-aarch64 registered: $(grep -qs "^enabled" /proc/sys/fs/binfmt_misc/qemu-aarch64 && echo YES || echo NO)"
       - name: assemble aarch64 rootfs
         run: |
           set -e
