@@ -8,9 +8,10 @@ jobs:
       - name: deps
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq busybox qemu-user binutils
-          sudo ln -sf "$(command -v qemu-aarch64)" /usr/local/bin/qemu-aarch64
-          echo "binfmt qemu-aarch64 registered: $(grep -qs "^enabled" /proc/sys/fs/binfmt_misc/qemu-aarch64 && echo YES || echo NO)"
+          sudo apt-get install -y -qq qemu-user-static qemu-user binutils && sudo apt-get remove -y -qq busybox-static 2>/dev/null || true
+          sudo apt-get install -y -qq busybox-static
+          sudo ln -sf "$(command -v qemu-aarch64-static)" /usr/local/bin/qemu-aarch64
+          echo "binfmt: $(grep -qs "^enabled" /proc/sys/fs/binfmt_misc/qemu-aarch64 && echo YES || echo NO)"; busybox | head -1
       - name: assemble aarch64 rootfs
         run: |
           set -e
@@ -36,6 +37,8 @@ jobs:
       - name: run watchdog host tests
         id: tests
         run: |
+          export TMPDIR=$GITHUB_WORKSPACE/v2-tmp
+          mkdir -p $TMPDIR
           bash tools/test-watchdog.sh --env host --rootfs /tmp/rfs 2>&1 | tee /tmp/wd.log
           echo "exit=$?" >> $GITHUB_OUTPUT
       - name: upload failure workdir
