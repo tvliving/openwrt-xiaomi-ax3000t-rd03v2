@@ -141,8 +141,31 @@ jobs:
 
       - name: 发布包仓库到 gh-pages
         run: |
+          set -euo pipefail
+          # actions/checkout 只 fetch 了 main（fetch-depth: 1），本地没有 gh-pages 分支，
+          # publish-repo.sh 会退化成新建 orphan 分支，push 必被远端拒绝：
+          #   ! [rejected] gh-pages -> gh-pages (fetch first)   ← run 43141896945
+          # 所以先把远端 gh-pages 拉成本地分支，并让脚本以它为基线提交
+          git fetch -q --depth=1 origin refs/heads/gh-pages:refs/heads/gh-pages || true
           ./tools/publish-repo.sh "$PWD/openwrt-v2"
-          git -C "$PWD/../pages-worktree" push origin gh-pages
+          WT="$PWD/../pages-worktree"
+          for attempt in 1 2 3 4 5; do
+            # 并发构建或远端有新提交时，把本次提交重放到远端之上再推
+            git -C "$WT" fetch -q origin gh-pages || true
+            git -C "$WT" rebase -q origin/gh-pages >/dev/null 2>&1 \
+              || git -C "$WT" merge -q --no-edit origin/gh-pages >/dev/null 2>&1 \
+              || true
+            if git -C "$WT" push -q origin gh-pages; then
+              echo "✔ 包仓库已发布（第 $attempt 次尝试）"
+              break
+            fi
+            echo "push 第 $attempt 次失败，$((attempt * 10))s 后重试"
+            if [ "$attempt" -eq 5 ]; then
+              echo "::error::gh-pages 推送连续 5 次失败"
+              exit 1
+            fi
+            sleep $((attempt * 10))
+          done
           echo ">>> 包仓库已发布: https://tvliving.github.io/openwrt-xiaomi-ax3000t-rd03v2/v2/$TAG/packages.adb"
 
       - name: 收集产物
@@ -178,7 +201,8 @@ jobs:
           - 构建标签: $TAG
           - 包仓库: https://tvliving.github.io/openwrt-xiaomi-ax3000t-rd03v2/v2/$TAG/packages.adb
           - 日志: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          - 默认 IP: 192.168.1.1 / 用户名 root / 无密码（WiFi 默认关闭，首次需配置）
+          - 默认 IP: 192.168.1.1 / 用户名 root / 无密码
+          - WiFi: 默认开启。2.4G SSID `RD03v2-2G`、5G SSID `RD03v2-5G`，WPA2-PSK 密码 `openwrt12345`（刷机后请自行修改）
           EOF
           ls -lh out/
           gh release create "$REL" out/* \
