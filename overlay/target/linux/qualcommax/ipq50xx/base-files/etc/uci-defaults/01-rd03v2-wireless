@@ -32,7 +32,7 @@ set wireless.default_radio0.network='lan'
 set wireless.default_radio0.mode='ap'
 set wireless.default_radio0.ssid='OpenWrt'
 set wireless.default_radio0.encryption='none'
-set wireless.default_radio0.disabled='1'
+set wireless.default_radio0.disabled='0'
 set wireless.radio1=wifi-device
 set wireless.radio1.type='mac80211'
 set wireless.radio1.path='platform/soc@0/b00a040.wifi'
@@ -45,7 +45,7 @@ set wireless.default_radio1.network='lan'
 set wireless.default_radio1.mode='ap'
 set wireless.default_radio1.ssid='OpenWrt'
 set wireless.default_radio1.encryption='none'
-set wireless.default_radio1.disabled='1'
+set wireless.default_radio1.disabled='0'
 commit wireless
 EOF
 logger -t rd03v2-wireless "wrote the default radio sections before the radios appeared"
