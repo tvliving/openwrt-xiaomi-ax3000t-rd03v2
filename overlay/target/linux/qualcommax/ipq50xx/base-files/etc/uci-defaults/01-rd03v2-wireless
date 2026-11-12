@@ -1,5 +1,7 @@
 #!/bin/sh
 # The two radios in /etc/config/wireless before any other first-boot script runs.
+# WiFi on by default: SSID RD03v2-2G / RD03v2-5G, WPA2-PSK key openwrt12345.
+# (A config that already exists from a sysupgrade keeping settings is left alone.)
 #
 # ath11k_ahb is loaded by /etc/init.d/nss (START=19), and with NSS Wi-Fi offload on only after
 # the firmware arm, about a minute into the first boot. uci-defaults run before that, in
@@ -30,8 +32,9 @@ set wireless.default_radio0=wifi-iface
 set wireless.default_radio0.device='radio0'
 set wireless.default_radio0.network='lan'
 set wireless.default_radio0.mode='ap'
-set wireless.default_radio0.ssid='OpenWrt'
-set wireless.default_radio0.encryption='none'
+set wireless.default_radio0.ssid='RD03v2-2G'
+set wireless.default_radio0.encryption='psk2+ccmp'
+set wireless.default_radio0.key='openwrt12345'
 set wireless.default_radio0.disabled='0'
 set wireless.radio1=wifi-device
 set wireless.radio1.type='mac80211'
@@ -43,8 +46,9 @@ set wireless.default_radio1=wifi-iface
 set wireless.default_radio1.device='radio1'
 set wireless.default_radio1.network='lan'
 set wireless.default_radio1.mode='ap'
-set wireless.default_radio1.ssid='OpenWrt'
-set wireless.default_radio1.encryption='none'
+set wireless.default_radio1.ssid='RD03v2-5G'
+set wireless.default_radio1.encryption='psk2+ccmp'
+set wireless.default_radio1.key='openwrt12345'
 set wireless.default_radio1.disabled='0'
 commit wireless
 EOF
