@@ -22,17 +22,20 @@ tested on hardware, and what was not, is in [VALIDATION.md](VALIDATION.md).
   latest release over Ethernet or Wi-Fi **without opening the case or connecting UART**,
   validates the board and NAND, and verifies the images it writes. Its `--wifi-ssid`,
   `--wifi-key`, `--wifi-country` and `--root-password` options set up the installed system.
-- **From an installed OpenWrt, v1.x included:** boot the release's RAM installer and run
-  `sysupgrade` from there, never in place ([updating without UART](docs/no-uart-reflash.md)).
-  Keeping settings carries a v1.x configuration over ([upgrading from v1.x](docs/upgrading-from-v1.md)).
+- **From an installed v2:** `sysupgrade` in place, settings kept, as on any OpenWrt device.
+  v2.0.0 to v2.1.2 refuse it by mistake: on those, run `sysupgrade -F` with this board's
+  image once ([in-place updates](docs/no-uart-reflash.md#in-place-updates)).
+- **From v1.x or another OpenWrt build:** boot the release's RAM installer and run
+  `sysupgrade` from there ([the RAM installer without UART](docs/no-uart-reflash.md)). Keeping
+  settings carries a v1.x configuration over ([upgrading from v1.x](docs/upgrading-from-v1.md)).
 - **Back to stock:** `revert.py` from xiaomi-openwrt-install.
 
 ## After installing
 
 - Connect to a LAN port and open **http://192.168.1.1** for LuCI. Set a root password.
   Wi-Fi stays off until it is configured, unless the installer was given Wi-Fi settings.
-- **Every flash, including updates, runs from the RAM installer.** `sysupgrade` from the
-  installed NAND system is refused.
+- **Updates are a plain `sysupgrade`** from the installed system, settings kept. As with any
+  flash, don't cut the power or kill it while it writes.
 - Packages: `apk update`, then `apk add <package>`. Userspace comes from OpenWrt's snapshot
   feeds; kernel modules (`kmod-*`) and AmneziaWG come from this port's signed repository for
   the release ([packages](docs/packages.md)). A sysupgrade keeps the configuration but not
@@ -42,6 +45,21 @@ tested on hardware, and what was not, is in [VALIDATION.md](VALIDATION.md).
 
 ## Known issues
 
+- **Country `RU` with an HE mode: no Wi-Fi up to v2.1.3** (#57, fixed in v2.1.4). The firmware
+  still has an old mark from Qualcomm's regulatory database that forbids 802.11ax there, so both
+  radios stayed off with `Failed to set beacon parameters` and `AP-DISABLED`; `BY` and `UA` carry
+  the same mark. From v2.1.4 these countries keep HE. Not tested: a Wi-Fi 6 client on such an AP.
+  On v2.1.3 or earlier, update, or keep your country and set `htmode` to `HT20` on 2.4 GHz and
+  `VHT80` on 5 GHz. Don't use another country's code to get Wi-Fi back: you would get that
+  country's channels and power limits ([details](docs/regulatory-ru-he.md)).
+- **Units whose NAND has a 128-byte spare area: releases up to v2.1.3 cannot read their flash**
+  (xiaomi-openwrt-install#7). Stock runs such chips with 8-bit error correction; our device tree
+  forced 4-bit, so every read failed and the installer stopped before flashing. From v2.1.4 the
+  error correction follows the chip, as in stock's loader. Units with a 64-byte spare area (all
+  units tested here) are configured exactly as before. **No 128-byte unit has run v2.1.4 yet**:
+  whether its bootloader reads what OpenWrt writes with 8-bit correction is not known, so the
+  installer refuses such a unit unless told to go ahead (`--allow-untested-8bit-nand`), and a
+  failed install there needs Xiaomi's TFTP recovery or a UART adapter.
 - **802.11s mesh needs host Wi-Fi mode** (`nss.general.wifi_offload='0'`). With NSS Wi-Fi
   offload on, a mesh interface does not come up and takes its radio's AP down until it is
   removed. v2.0.0 resets in host mode whenever a device connects: use v2.0.1 or later (#47).
@@ -122,8 +140,9 @@ Details are in [VALIDATION.md](VALIDATION.md).
 - [Building](docs/building.md)
 - [VALIDATION.md](VALIDATION.md): what was tested on hardware, and what was not
 - [NFC tag](docs/nfc.md)
-- [Updating without UART](docs/no-uart-reflash.md)
+- [In-place updates, and the RAM installer without UART](docs/no-uart-reflash.md)
 - [UK 5.8 GHz channels and the firmware's regulatory database](docs/regulatory-gb-5ghz.md)
+- [Countries BY, RU, UA and 802.11ax](docs/regulatory-ru-he.md)
 
 ## v1.x
 

@@ -171,6 +171,9 @@ EOS
 	# stations when it starts again (0012, #54)
 	chk "apsta restart deauthenticates the stations hostapd kept (0012)" \
 		"$(grep -cF 'iface_flush_stations(phy, config);' "$X/usr/share/hostap/hostapd.uc")$(grep -cF 'DEAUTHENTICATE ff:ff:ff:ff:ff:ff reason=2' "$X/usr/share/hostap/hostapd.uc")" 11
+	# an AP on a channel whose regulatory rule has NO-HE starts without HE (hostapd 994, #57)
+	chk "hostapd starts without HE where regulatory rules forbid it (994)" \
+		"$(yes_ grep -qaF 'do not allow HE (802.11ax)' "$X/usr/sbin/wpad")" yes
 	chk "early Q6 policy service" "$(yes_ test -L "$X/etc/rc.d/S18rd03v2-q6")" yes
 	chk "early RAM installer service" "$(yes_ test -L "$X/etc/rc.d/S17rd03v2-installer")" yes
 	# first-boot scripts
@@ -214,8 +217,25 @@ EOS
 		chk "ath11k.ko adds GB 5725-5850 MHz (964)" \
 			"$("$od" -d "$ko" | grep -oE 'mov[[:space:]]+w[0-9]+, #0x(4247|5b48)\b' | grep -oE '0x[0-9a-f]+$' | sort -u | xargs)" \
 			"0x4247 0x5b48"
+		# BY, RU and UA keep HE (993): the table's bytes, in the module's read-only data
+		chk "ath11k.ko ignores the firmware's no-802.11ax flag for BY, RU and UA (993)" \
+			"$(python3 -I -c 'import sys; print("yes" if b"BY\0RU\0UA\0" in open(sys.argv[1], "rb").read() else "no")' "$ko")" yes
 	else
 		echo "FAIL ath11k.ko or the tree's objdump not found"; fail=$((fail + 1))
+	fi
+	# The NSS driver and ECM keep the features no release exercised off, whichever kmods the
+	# build selects (feed-overlay qca-nss-drv 9001, qca-nss-ecm 9002): a feed that renames a
+	# switch would turn those overrides into silent no-ops.
+	nm=$(ls "$TREE"/staging_dir/toolchain-*/bin/*-linux-musl-nm 2>/dev/null | head -1)
+	drv=$(find "$X/lib/modules" -name qca-nss-drv.ko 2>/dev/null | head -1)
+	ecm=$(find "$X/lib/modules" -name ecm.ko 2>/dev/null | head -1)
+	if [ -n "$nm" ] && [ -n "$drv" ] && [ -n "$ecm" ]; then
+		chk "qca-nss-drv.ko has no IPsec, MAP-T, 6rd, mirror or Wi-Fi mesh code (9001)" \
+			"$("$nm" --defined-only "$drv" | grep -ciE ' nss_(ipsec|map_t|tun6rd|mirror|wifi_mesh)')" 0
+		chk "ecm.ko has no MAP-T or IPsec interface code and does not need nat46 (9002)" \
+			"$("$nm" "$ecm" | grep -ciE 'map_t|nat46|ipsec_tunnel')" 0
+	else
+		echo "FAIL qca-nss-drv.ko, ecm.ko or the tree's nm not found"; fail=$((fail + 1))
 	fi
 else
 	echo "FAIL cannot unpack the root squashfs of the sysupgrade image"; fail=$((fail + 1))
@@ -228,6 +248,11 @@ if [ -n "$dtb" ]; then
 	chk "DTB i2c@78b7000 clock-frequency" "$(fdtget -t u "$dtb" /soc@0/i2c@78b7000 clock-frequency 2>&1)" 100000
 	chk "DTB i2c@78b7000 dmas" "$(fdtget -t x "$dtb" /soc@0/i2c@78b7000 dmas 2>&1 | awk '{print $2, $4}')" "8 9"
 	chk "DTB i2c@78b7000 dma-names" "$(fdtget -t s "$dtb" /soc@0/i2c@78b7000 dma-names 2>&1 | tr '\0' ' ' | xargs)" "tx rx"
+	# tree patch 0014: the ECC strength follows the chip's OOB size, as in the stock loader
+	nand=/soc@0/spi@79b0000/nand@0
+	chk "DTB nand@0 ECC engine" "$(fdtget "$dtb" $nand nand-ecc-engine >/dev/null 2>&1 && echo set || echo missing)" set
+	chk "DTB nand@0 forces no ECC strength" "$(fdtget "$dtb" $nand nand-ecc-strength >/dev/null 2>&1 && echo forced || echo absent)" absent
+	chk "DTB nand@0 forces no ECC step" "$(fdtget "$dtb" $nand nand-ecc-step-size >/dev/null 2>&1 && echo forced || echo absent)" absent
 else
 	echo "FAIL DTB not found in the tree"; fail=$((fail + 1))
 fi
@@ -286,8 +311,10 @@ for p in "$OV"/target/linux/qualcommax/patches-6.18/*.patch; do
 done
 if [ -n "$BP" ]; then
 	python3 "$V2/tools/check-host-rx.py" "$BP/drivers/net/wireless/ath/ath11k" > "$W/host-rx" 2>&1
+	host_rx_rc=$?
 	cat "$W/host-rx"
-	chk "host RX buffer byte semantics" "$(grep -c '^FAIL' "$W/host-rx")" 0
+	# its exit status too: a crash prints no FAIL line
+	chk "host RX buffer byte semantics" "$host_rx_rc $(grep -c '^FAIL' "$W/host-rx")" "0 0"
 fi
 
 echo "=== package repository"

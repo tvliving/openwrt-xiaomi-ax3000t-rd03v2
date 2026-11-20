@@ -50,6 +50,9 @@ where the table below says it adds changes (v2.1.0 and v2.1.1 do).
 | DEV-v2.1.1-b1 | v2.1.0 plus 992 (#55) and the v1.x migration change (#51); bench-only additions for the #54 and #55 tests (see [v2.1.1](#v211)) |
 | v2.1.1 | the release: b1's sources plus tree patch 0012 (#54), built fresh; see [v2.1.1](#v211) |
 | v2.1.2 | the release: v2.1.1's sources plus `kmod-pppol2tp`, `kmod-pptp`, `kmod-mppe`, `ppp-mod-pppol2tp`, `ppp-mod-pptp` and `xl2tpd` in our repository (#56), built fresh; see [v2.1.2](#v212) |
+| DEV-inplace-b1 | v2.1.2's sources plus tree patch 0013 (an in-place sysupgrade is allowed), built fresh; see [In-place updates](#in-place-updates) |
+| v2.1.3 | the release: DEV-inplace-b1's sources, built fresh; see [v2.1.3](#v213) |
+| v2.1.4 | the release: v2.1.3's sources plus 993 and 994 (#57), tree patch 0014 (the NAND ECC follows the chip), every kernel module package with the NSS driver and ECM kept as before, and a one-line procd backport, built fresh; see [v2.1.4](#v214) |
 
 **Not tested:** a multi-day soak (the longest single runs were hours), more
 than one unit of the hardware, and RF performance beyond throughput at one
@@ -75,6 +78,161 @@ by hand on rc1 (C8, C14).
 | C13 | Upgrade from a realistic v1.x install | pass | b16 | not re-run; the migration's assumptions checked against his nss-tools |
 | C14 | Buttons and LEDs | pass: both LEDs, both buttons, reboot, failsafe, factory reset | b9, rc1 | not re-run (no hardware or device tree change) |
 | C15 | Package signature failures | pass, 8 checks | b9 | not re-run (same signing) |
+
+## v2.1.4
+
+v2.1.3's sources plus:
+
+- **#57:** ath11k 993 (countries `BY`, `RU` and `UA` keep HE) and hostapd 994 (an AP starts
+  without HE where a regulatory rule forbids it); see [the RU doc](docs/regulatory-ru-he.md).
+- **xiaomi-openwrt-install#7:** tree patch 0014. The device tree no longer forces 4-bit ECC,
+  so the NAND driver picks the strength from the chip's spare area, as the stock loader does.
+- **Every kernel module package** in the repository, with feed-overlay patches that keep the
+  NSS driver's IPsec, MAP-T, 6rd, mirror and Wi-Fi mesh support and ECM's MAP-T and IPsec off,
+  as in every release so far. `kmod-ipt-rtpengine` (its feed lacks a header) and the NSS
+  MAP-T, mirror and mesh client modules are left out.
+- **procd:** `ujail` does not lock `SECBIT_KEEP_CAPS` (procd 0d3c5dc1bb, one line), which
+  OpenWrt's snapshot dnsmasq packages need since 2026-11-01.
+
+**Build:** 119 min, no package failed, `verify-v2` 0 failures, including new checks for 993,
+994 and the device tree's ECC properties. Against v2.1.3:
+
+| | v2.1.3 | v2.1.4 |
+|---|---|---|
+| Image packages | 200 | 201: the same at the same versions apart from `base-files` and `kernel`, plus `kmod-nat46` (his ECM Makefile depends on it once it is built; ECM does not use it). `wpad` is built differently at the same version: the Wi-Fi 7 driver modules now in the repository switch on hostapd's 802.11be and OCV support (82 KB larger) |
+| Device tree | | only `nand-ecc-step-size` and `nand-ecc-strength` removed |
+| Modules in the image | 95 | 96: `qca-nss-drv.ko` and `qca-nss-netlink.ko` with the same symbols and section sizes; `ecm.ko` and `mac80211.ko` the same symbols, 64 bytes larger; `ath11k.ko` 80 bytes more (993); `nf_conntrack`, `nf_nat` and `nft_ct` larger, from kernel options the new modules select; 21 differ in all, most by tens of bytes |
+| Kernel | | 247 more options built in, code +341 KB |
+| sysupgrade image | 16.90 MB | 17.12 MB |
+| Repository | 135 kmods, 169 packages, 11 MB | 1253 kmods, 1287 packages, 53 MB |
+
+**NAND run** on rd03v2-ap2 with its home configuration (a dumb AP, wired uplink on `wan`), all
+updates in place. The run used two builds of these sources: the first without the procd
+backport, the second (the release's image) with it. Their root filesystems differ only in `ujail`, the version stamps and a rebuilt `qca-nss-netlink.ko`.
+
+- **v2.1.3 -> v2.1.4** (first build), plain `sysupgrade`, `-T` clean: SSH after 71 s.
+  `/etc/config` identical; the 12 boot-chain partitions match the stock manifest; boot flags
+  unchanged; all 20 MTD partitions at 4-bit ECC, 64-byte spare area, 0 failures and 0
+  corrections, as on v2.1.3: for this chip 0014 picks what was forced before. NSS Wi-Fi
+  offload on (`nss_offload=1`, `frame_mode=2`), four APs up.
+- **A reboot** (47 s), **v2.1.4 -> v2.1.4** (73 s), and **first build -> the release's image**
+  (76 s): the same checks each time.
+- **RAM installer (C1):** a RAM installer built from these sources (the first build's, with a
+  test-only addition that answers SSH on the uplink cable) written to the kernel UBI and
+  booted: SSH after 54 s. Its live device tree forces no ECC strength; all 20 partitions at
+  4-bit with 0 failures; reading the 13 boot-chain and calibration partitions end to end adds
+  no ECC failure, and the boot chain matches the stock manifest 12/12; the U-Boot environment
+  reads without a CRC error. These are the checks a unit with a 128-byte spare area would be
+  asked to pass before anything is written. Then the release's sysupgrade image, installed
+  from that RAM system with the saved configuration: the home AP again two minutes after the
+  flash began, `/etc/config` identical, NSS Wi-Fi offload active.
+- **Memory (C11):** 42.3 / 41.7 MB available at 5 / 10 min, against 42.7-43.7 MB for v2.1.3
+  on the same unit the day before: about 1 MB less, from the kernel.
+- **#57:** v2.1.3 as the control: `RU` gives `NO-HE` on every rule, `Failed to set beacon
+  parameters` and no radio up in 240 s. v2.1.4, on both builds: `RU`, `BY` and `UA` with HE20
+  on channel 6 and HE80 on channel 100 have no `NO-HE` rule, both radios `ENABLED` (`BY`
+  after its 60 s CAC) with `ieee80211ax=1`, four APs, and no 994 warning. The home
+  configuration back byte for byte, both radios up after the CAC. Beacons were not captured on
+  this run; the PR's runs on DEV-i57-b1 did that.
+- **Wi-Fi clients (C4, short):** because `wpad` is built differently, a phone (Wi-Fi 5) joined a
+  test network on each band of the release's image: on 5 GHz at VHT-MCS 9, 80 MHz, with 195 MB
+  up and 278 MB down in 30 s; on 2.4 GHz about 50 MB each way in 85 s. WPA2 handshakes
+  completed, no errors logged. No Wi-Fi 6 or Wi-Fi 7 client was available.
+- **Wired (C3):** a client routed through the unit: 931 / 932 Mbit/s with ECM accelerating the
+  connections and the CPU 95 % idle (v2.1.3: 938); 1 GB from the internet at 672 Mbit/s, the
+  line's speed.
+- **Packages (C12)**, from the build's repository served locally, since v2.1.4's was not
+  published yet: `apk del dnsmasq; apk add dnsmasq-full` installs OpenWrt's snapshot
+  `dnsmasq-full` 2.93-r12 with `kmod-nf-conntrack-netlink`; it starts in its jail, answers
+  DNS, and a uci `config ipset` section fills an nftables set from the answers. On the first
+  build, without the procd backport, the same package failed with `setting capabilities
+  failed: Operation not permitted`. hostapd and wpa_supplicant, the other jails with a
+  capabilities file, run as before. Afterwards the pinned `dnsmasq` 2.93-r6 was put back.
+
+**Not tested:** a unit with a 128-byte spare area, the case 0014 exists for (none here; the
+reporter's unit is the first). A Wi-Fi 6 client on an `RU`, `BY` or `UA` AP. Wi-Fi throughput
+(C4), host Wi-Fi mode, firmware-crash recovery (C9) and a soak were not re-run: ath11k changes
+only in 993's regulatory flags, and the NSS driver is unchanged. Of the new kernel modules
+only `nf_conntrack_netlink` and `nat46` were loaded on a router. Among the kernel options now built in are XFRM, the GRE conntrack helper, conntrack labels, the netfilter egress hook, netpoll and TLS device support: IPsec next to ECM, and GRE or PPTP passthrough with the GRE helper, were not tried. A station (uplink) interface was not run on this build. `apk` from the published
+repository is checked after publishing.
+
+## v2.1.3
+
+v2.1.2's sources plus tree patch 0013: an in-place `sysupgrade` is no longer refused (see
+[In-place updates](#in-place-updates)). The image holds the same packages at the same versions
+as v2.1.2 apart from `base-files` (the tree revision), with the same kernel package; its
+`platform.sh` has no refusal. `verify-v2` 0 failures. Built in 96 min; assets from
+`mkrelease-v2` (tree verification passed), the same twelve files as v2.1.2.
+
+**NAND run** on rd03v2-ap2 with its home configuration, the dumb AP whose only cable is its
+`wan` uplink, so both updates ran over that cable, in place:
+
+- **v2.1.2 -> v2.1.3** with `sysupgrade -F`, the update the release notes give for v2.0.0 to
+  v2.1.2: the image's sha256 matched `sha256sums.txt`, and `sysupgrade -T` showed only the
+  refusal. SSH answered 68 s after the flash began; `/etc/config` identical to before, the four
+  APs up, NSS Wi-Fi offload on (`nss_offload=1`, `frame_mode=2`), the boot flags as
+  `sysupgrade` sets them, the kernel UBI rewritten in place.
+- **v2.1.3 -> v2.1.3** with a plain `sysupgrade` (its `-T` passes without `-F`): 69 s,
+  the same checks.
+- **Package repository:** after publishing, `apk update` read the v2.1.3 repository from the
+  image's list, and `kmod-tun` resolved from it.
+- **Reboots:** a plain `reboot` came back. About two minutes later the board reset once by
+  itself, while `nss-status` ran: a hard reset (UBIFS recovered the overlay on the next boot),
+  with no watchdog receipt and nothing in pstore. Not reproduced: the board then stayed up
+  untouched for more than six minutes, and `nss-status` ran cleanly at 402 s and, after
+  another reboot, at 113 s. v2.1.3 has v2.1.2's kernel and modules, so this is not from the
+  release's change; it is recorded with the earlier unexplained resets ([C9](#c9-recovery-from-q6-firmware-crashes)).
+
+## In-place updates
+
+The refusal of an in-place `sysupgrade` (from issue #4, July 2026) rested on one unit that
+stopped booting after a scripted in-place upgrade, which was never reproduced. Retested on
+2026-11-11 on rd03v2-ap2 (stock loader, `0:APPSBL` md5 `e651d6fc067c1fbb9fca6310ec318c7d`), a
+dumb AP on the v2.1.2 release with its home configuration and no UART: seven in-place
+sysupgrades in a row, each keeping settings, with the release images of v2.1.2 and v2.1.1. Each
+run was checked from the raw UBI headers of both partitions and from the system after boot.
+
+| Run | Image | `platform.sh` on the running system | Booted | Settings |
+|---|---|---|---|---|
+| 1-3 | v2.1.2, v2.1.1, v2.1.2 | refusal removed; `ubi_kernel` reformatted before `nand_do_upgrade` | 3 / 3, 62-72 s to SSH, four APs (run 1: seen by hand at 99 s, not in its log) | `/etc/config` identical to the backup taken before |
+| 4-6 | v2.1.2, v2.1.1, v2.1.2 | refusal removed only (what the AX6000 and Redmi AX5400 run, and what tree patch 0013 ships) | 3 / 3, 67-68 s | identical |
+| 7 | v2.1.2 | the release's, unmodified, with `sysupgrade -F` | yes, 68 s | identical |
+
+In runs 4-7, `ubi_kernel` kept its image sequence number while the kernel and layout volumes
+moved to other eraseblocks every time: `nand_do_upgrade` rewrote the kernel UBI in place, the
+case the refusal was there for, and the stock loader booted it. The rootfs UBI was never
+reformatted, in any run. Every boot had the boot flags as `sysupgrade` sets them (slot 0,
+`flag_last_success=1`, both try counters 8). Every boot logs `cannot attach mtd19` (the command
+line names `ubi.mtd=rootfs` twice).
+
+**The built image.** DEV-inplace-b1: v2.1.2's sources plus tree patch 0013, built fresh in
+99 min, `verify-v2` 0 failures, the same image packages as v2.1.2 apart from `base-files` (the
+tree revision); its `platform.sh` has no refusal. On the same unit, settings kept each time:
+
+| Run | From -> to | Command | Booted | Settings |
+|---|---|---|---|---|
+| N1 | v2.1.2 -> DEV-inplace-b1 | `sysupgrade -F` (the one update from a release that refuses) | yes, 68 s to SSH, four APs | identical |
+| N2 | DEV-inplace-b1 -> DEV-inplace-b1 | `sysupgrade` (its `-T` passes without `-F`) | yes, 67 s | identical |
+| N3 | DEV-inplace-b1 -> v2.1.2 | `sysupgrade` | yes, 67 s | identical |
+
+The kernel UBI kept its image sequence number in all three, with the volumes on other
+eraseblocks. On DEV-inplace-b1 a random 4 MB file is still refused (`Image metadata not
+present`, `invalid sysupgrade file`); with `-F` `sysupgrade -T` lets it through, as on every
+release. With the image in `/tmp`, 24-27 MB `MemAvailable` was left before the upgrades where
+it was recorded (runs 1-4 and N1-N3).
+
+**`UBI init error 22`.** The stock loader's slot selection, from its disassembly: with
+`flag_ota_reboot=0`, it reads the try counter of the slot that `flag_last_success` names
+(`flag_try_sys1_failed` for slot 0, `flag_try_sys2_failed` for slot 1), and boots the other
+slot when that counter is over 5. With v1.x's flags (`flag_last_success=0`, both counters 8)
+it starts slot 1, the stock `rootfs_1` window: the first 36 MiB of the 81 MiB rootfs UBI, which
+cannot attach there (its volumes reserve all 652 eraseblocks; the window holds 288), so it
+prints `UBI init error 22`, and then, as v1.x installs showed, boots slot 0 (that fallback was
+not traced in the disassembly). That is the single error 22 that v1.x's
+documentation called harmless on a first boot. So on its own, the message doesn't show that the
+kernel UBI was the problem.
+The 30 MiB UBI attach that the loader also contains is in its TFTP recovery (the
+anti-rollback check), not in the boot path.
 
 ## v2.1.2
 
@@ -656,6 +814,7 @@ boot (SSID, WPA2 key and country BR on both radios, both APs up, the root passwo
 |---|---|---|
 | v1.14-nss -> v2 through the RAM installer, keeping a v1.x config (VLANs, the v1.x NSS knobs and disabled services that the migration handles) | pass | b5, b10, rc1-a |
 | v2 -> v2, keeping settings | pass | b10, and every candidate since (b12 -> b16) |
+| v2 -> v2 in place (`sysupgrade` from the installed system), keeping settings | pass: 10 / 10, see [In-place updates](#in-place-updates) | v2.1.2, v2.1.1, DEV-inplace-b1 |
 | v2 -> v1.14-nss (rollback), with a v1.x config | pass: v1.14-nss boots with it, both APs, NSS and ECM loaded, no warnings | b16 |
 | offline RAM installer from a release cache (`install.py nss-v2 --offline`) | pass | b9 |
 | v2 -> stock 2.0.28 with `xiaomi-openwrt-install` (`revert.py`, wired) | pass: stock written and read back, setup wizard back (`inited=0`) | rc1 (twice) |
